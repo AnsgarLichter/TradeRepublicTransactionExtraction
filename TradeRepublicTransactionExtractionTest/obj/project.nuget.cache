@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "Yo0tQx7Ttmk=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\Ansgar\\Development\\Repositories\\TradeRepublicTransactionExtractionTest\\TradeRepublicTransactionExtractionTest\\TradeRepublicTransactionExtractionTest.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Ansgar\\.nuget\\packages\\ibannet\\5.17.0\\ibannet.5.17.0.nupkg.sha512",
+    "C:\\Users\\Ansgar\\.nuget\\packages\\pdfpig\\0.1.12\\pdfpig.0.1.12.nupkg.sha512"
+  ],
+  "logs": []
+}
