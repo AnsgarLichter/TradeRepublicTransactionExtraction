@@ -25,7 +25,7 @@ List<TextBlock> cashBlocks = [];
 PdfRectangle transactionArea;
 TransactionAreaColumns? columns = null;
 // TODO: Can we determine this dynamically?
-var rowHeightThreshold = 22;
+const int rowHeightThreshold = 18;
 var transactions = new List<Transaction>();
 // TODO: Page break must be handled when transaction area spans multiple pages
 foreach (var page in document.GetPages())
@@ -33,7 +33,7 @@ foreach (var page in document.GetPages())
     var words = page.GetWords(NearestNeighbourWordExtractor.Instance);
     var blocks = new DocstrumBoundingBoxes(options).GetBlocks(words);
     var blocksByText = blocks
-        .GroupBy(b => b.Text.ToLower().Trim())
+        .GroupBy(b => b.Text.ToLower().Trim().Replace(b.Separator, " "))
         .ToDictionary(g => g.Key, g => g.ToList());
 
     // TODO get transaction area
@@ -57,28 +57,22 @@ foreach (var page in document.GetPages())
 
 
     var columnKeys = new[] { "datum", "typ", "beschreibung", "zahlungseingang", "zahlungsausgang", "saldo" };
-    var columnBoxes = columnKeys.Select(key =>
-    {
-        if (!blocksByText.TryGetValue(key, out var boxes))
-        {
-            return null;
-        }
+    var columnPositions = columnKeys
+        .Select(key => blocksByText.TryGetValue(key, out var boxes)
+            ? boxes.FirstOrDefault(b => b.BoundingBox.Top < transactionArea.Top)?.BoundingBox
+            : null)
+        .ToList();
 
-        return boxes.FirstOrDefault(b => b.BoundingBox.Top < transactionArea.Top)?.BoundingBox;
-    }).ToList();
-    if (columnBoxes.Any(box => box == null))
-    {
-        continue;
-    }
+    if (columnPositions.Any(box => box == null)) continue;
 
     columns = new TransactionAreaColumns()
     {
-        DateColumn = columnBoxes[0] ?? new PdfRectangle(),
-        TypeColumn = columnBoxes[1] ?? new PdfRectangle(),
-        DescriptionColumn = columnBoxes[2] ?? new PdfRectangle(),
-        IncomeColumn = columnBoxes[3] ?? new PdfRectangle(),
-        ExpenseColumn = columnBoxes[4] ?? new PdfRectangle(),
-        BalanceColumn = columnBoxes[5] ?? new PdfRectangle()
+        DateColumn = columnPositions[0] ?? new PdfRectangle(),
+        TypeColumn = columnPositions[1] ?? new PdfRectangle(),
+        DescriptionColumn = columnPositions[2] ?? new PdfRectangle(),
+        IncomeColumn = columnPositions[3] ?? new PdfRectangle(),
+        ExpenseColumn = columnPositions[4] ?? new PdfRectangle(),
+        BalanceColumn = columnPositions[5] ?? new PdfRectangle()
     };
 
     cashBlocks.AddRange(blocks.Where(b =>
@@ -99,7 +93,7 @@ cashBlocks = cashBlocks
 
 var groupedBlocksPerRow = cashBlocks
     .GroupBy(b =>
-        cashBlocks.FirstOrDefault(cb => Math.Abs(cb.BoundingBox.Top - b.BoundingBox.Top) <= rowHeightThreshold)
+        cashBlocks.FirstOrDefault(cb => Math.Abs(cb.BoundingBox.Top - b.BoundingBox.Top) <= rowHeightThreshold / 2)
             ?.BoundingBox.Top)
     .Select(g => g.ToList())
     .ToList();
@@ -122,38 +116,37 @@ groupedBlocksPerRow.ForEach(blocks =>
     var parsedRow = new CashRow();
     blocks.ForEach(block =>
     {
-        var parsedText = block.Text.Replace(block.Separator, " ");
         if (block.BoundingBox.Right < foundColumns.TypeColumn.Left)
         {
-            parsedRow.Date += $" {parsedText}";
+            parsedRow.Date += $" {block.Text}";
             return;
         }
 
         if (block.BoundingBox.Right < foundColumns.DescriptionColumn.Left)
         {
-            parsedRow.Type += $" {parsedText}";
+            parsedRow.Type += $" {block.Text}";
             return;
         }
 
         if (block.BoundingBox.Right < foundColumns.IncomeColumn.Left)
         {
-            parsedRow.Description += $" {parsedText}";
+            parsedRow.Description += $" {block.Text}";
             return;
         }
 
         if (block.BoundingBox.Right < foundColumns.ExpenseColumn.Left)
         {
-            parsedRow.Income += $" {parsedText}";
+            parsedRow.Income += $" {block.Text}";
             return;
         }
 
         if (block.BoundingBox.Right < foundColumns.BalanceColumn.Left)
         {
-            parsedRow.Expense += $" {parsedText}";
+            parsedRow.Expense += $" {block.Text}";
             return;
         }
 
-        parsedRow.Balance += $" {parsedText}";
+        parsedRow.Balance += $" {block.Text}";
     });
 
     if (parsedRow.Date == null || !DateOnly.TryParse(parsedRow.Date.Trim(), out var bookingDate))
