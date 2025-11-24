@@ -10,74 +10,79 @@ using UglyToad.PdfPig.DocumentLayoutAnalysis.PageSegmenter;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.WordExtractor;
 using Transaction = TradeRepublicTransactionExtractionTest.Transaction;
 
-var document = PdfDocument.Open(@"<PATH_TO_PDF_FILE>");
+var options = new DocstrumBoundingBoxes.DocstrumBoundingBoxesOptions()
+{
+    // Vertical
+    BetweenLineMultiplier = 0.5,
+    // Horizontal
+    WithinLineMultiplier = 0.78,
+    // Make “is this the same horizontal line?” more strict
+    WithinLineBounds = new DocstrumBoundingBoxes.AngleBounds(-15, 15),
+    BetweenLineBounds = new DocstrumBoundingBoxes.AngleBounds(-15, 15)
+};
+var document = PdfDocument.Open(@"<PATH_TO_PDF>");
 List<TextBlock> cashBlocks = [];
 PdfRectangle transactionArea;
 TransactionAreaColumns? columns = null;
-
-
+// TODO: Can we determine this dynamically?
+var rowHeightThreshold = 22;
+var transactions = new List<Transaction>();
+// TODO: Page break must be handled when transaction area spans multiple pages
 foreach (var page in document.GetPages())
 {
     var words = page.GetWords(NearestNeighbourWordExtractor.Instance);
-    var options = new DocstrumBoundingBoxes.DocstrumBoundingBoxesOptions()
-    {
-        // Vertical
-        BetweenLineMultiplier = 0.5,
-        // Horizontal
-        WithinLineMultiplier = 0.78,
-        // Make “is this the same horizontal line?” more strict
-        WithinLineBounds = new DocstrumBoundingBoxes.AngleBounds(-15, 15),
-        BetweenLineBounds = new DocstrumBoundingBoxes.AngleBounds(-15, 15)
-    };
     var blocks = new DocstrumBoundingBoxes(options).GetBlocks(words);
+    var blocksByText = blocks
+        .GroupBy(b => b.Text.ToLower().Trim())
+        .ToDictionary(g => g.Key, g => g.ToList());
 
     // TODO get transaction area
-    var transactionAreaHeadingBox =
-        blocks.FirstOrDefault(b => b.Text.ToLower().Trim() == "umsatzübersicht")?.BoundingBox;
-    if (transactionAreaHeadingBox == null)
+    var result = blocksByText.TryGetValue("umsatzübersicht", out var transactionAreaHeadingBoxes);
+    if (!result || transactionAreaHeadingBoxes!.Count != 1)
     {
         continue;
     }
 
-    var nextSectionHeading = blocks.FirstOrDefault(b => b.Text.ToLower().Trim() == "TBD")?.BoundingBox;
-    transactionArea = new PdfRectangle(
-        nextSectionHeading?.TopLeft ?? new PdfPoint(0, 10),
-        transactionAreaHeadingBox.GetValueOrDefault().BottomRight);
+    var transactionAreaHeadingBox = transactionAreaHeadingBoxes.First()!.BoundingBox;
 
-    var dateColumnHeadingBox =
-        blocks.FirstOrDefault(b => b.Text.ToLower().Trim() == "datum" && b.BoundingBox.Top < transactionArea.Top)
-            ?.BoundingBox;
-    var typeColumnHeadingBox =
-        blocks.FirstOrDefault(b => b.Text.ToLower().Trim() == "typ" && b.BoundingBox.Top < transactionArea.Top)
-            ?.BoundingBox;
-    var descriptionColumnHeadingBox =
-        blocks.FirstOrDefault(b =>
-            b.Text.ToLower().Trim() == "beschreibung" && b.BoundingBox.Top < transactionArea.Top)?.BoundingBox;
-    var incomeColumnHeadingBox = blocks.FirstOrDefault(b =>
-        b.Text.ToLower().Trim() == "zahlungseingang" && b.BoundingBox.Top < transactionArea.Top)?.BoundingBox;
-    var expenseColumnHeadingBox = blocks.FirstOrDefault(b =>
-        b.Text.ToLower().Trim() == "zahlungsausgang" && b.BoundingBox.Top < transactionArea.Top)?.BoundingBox;
-    var balanceColumnHeadingBox =
-        blocks.FirstOrDefault(b => b.Text.ToLower().Trim() == "saldo" && b.BoundingBox.Top < transactionArea.Top)
-            ?.BoundingBox;
-    if (dateColumnHeadingBox == null || typeColumnHeadingBox == null || descriptionColumnHeadingBox == null ||
-        incomeColumnHeadingBox == null || expenseColumnHeadingBox == null || balanceColumnHeadingBox == null)
+    var nextSectionHeading = blocksByText.TryGetValue("TBD", out var nextSectionHeadings)
+        ? nextSectionHeadings
+            .FirstOrDefault()?.BoundingBox
+        : null;
+
+    transactionArea = new PdfRectangle(
+        // TODO: Fallback could be determined via Text "Seite 1 von 2"
+        nextSectionHeading?.TopLeft ?? new PdfPoint(0, 50),
+        transactionAreaHeadingBox.BottomRight);
+
+
+    var columnKeys = new[] { "datum", "typ", "beschreibung", "zahlungseingang", "zahlungsausgang", "saldo" };
+    var columnBoxes = columnKeys.Select(key =>
+    {
+        if (!blocksByText.TryGetValue(key, out var boxes))
+        {
+            return null;
+        }
+
+        return boxes.FirstOrDefault(b => b.BoundingBox.Top < transactionArea.Top)?.BoundingBox;
+    }).ToList();
+    if (columnBoxes.Any(box => box == null))
     {
         continue;
     }
 
     columns = new TransactionAreaColumns()
     {
-        dateColumn = dateColumnHeadingBox.GetValueOrDefault(),
-        typeColumn = typeColumnHeadingBox.GetValueOrDefault(),
-        descriptionColumn = descriptionColumnHeadingBox.GetValueOrDefault(),
-        incomeColumn = incomeColumnHeadingBox.GetValueOrDefault(),
-        expenseColumn = expenseColumnHeadingBox.GetValueOrDefault(),
-        balanceColumn = balanceColumnHeadingBox.GetValueOrDefault()
+        DateColumn = columnBoxes[0] ?? new PdfRectangle(),
+        TypeColumn = columnBoxes[1] ?? new PdfRectangle(),
+        DescriptionColumn = columnBoxes[2] ?? new PdfRectangle(),
+        IncomeColumn = columnBoxes[3] ?? new PdfRectangle(),
+        ExpenseColumn = columnBoxes[4] ?? new PdfRectangle(),
+        BalanceColumn = columnBoxes[5] ?? new PdfRectangle()
     };
 
     cashBlocks.AddRange(blocks.Where(b =>
-        b.BoundingBox.Top < dateColumnHeadingBox.GetValueOrDefault().Bottom &&
+        b.BoundingBox.Top < columns.GetValueOrDefault().DateColumn.Bottom &&
         b.BoundingBox.Bottom > transactionArea.Bottom).ToList());
 }
 
@@ -87,35 +92,21 @@ if (!columns.HasValue)
     return;
 }
 
-cashBlocks.Sort((a, b) =>
-{
-    var yComparison = b.BoundingBox.Centroid.Y.CompareTo(a.BoundingBox.Centroid.Y);
-    return yComparison != 0 ? yComparison : b.BoundingBox.Centroid.X.CompareTo(a.BoundingBox.Centroid.X);
-});
+cashBlocks = cashBlocks
+    .OrderByDescending(b => b.BoundingBox.Centroid.Y)
+    .ThenBy(b => b.BoundingBox.Centroid.X)
+    .ToList();
 
-// TODO Process cash blocks row by row and parse them to have a ready to process structure wrt to mapping them to transactions
-var rowHeightThreshold = 18;
-var blocksPerRow = new List<List<TextBlock>>();
-var currentRow = new List<TextBlock>()
-{
-    cashBlocks[0]
-};
-for (var i = 1; i < cashBlocks.Count; i++)
-{
-    if (cashBlocks[i - 1].BoundingBox.Top - cashBlocks[i].BoundingBox.Top > rowHeightThreshold)
-    {
-        blocksPerRow.Add(currentRow);
-        currentRow = [];
-    }
+var groupedBlocksPerRow = cashBlocks
+    .GroupBy(b =>
+        cashBlocks.FirstOrDefault(cb => Math.Abs(cb.BoundingBox.Top - b.BoundingBox.Top) <= rowHeightThreshold)
+            ?.BoundingBox.Top)
+    .Select(g => g.ToList())
+    .ToList();
 
-    currentRow.Add(cashBlocks[i]);
-}
-
-// TODO: Bring actual table rows into structure to gain 1 string per column / property
 var foundColumns = columns.Value;
-var transactions = new List<Transaction>();
-var rowHeight = 7;
-blocksPerRow.ForEach(blocks =>
+const int rowHeight = 7;
+groupedBlocksPerRow.ForEach(blocks =>
 {
     blocks.Sort((a, b) =>
     {
@@ -132,31 +123,31 @@ blocksPerRow.ForEach(blocks =>
     blocks.ForEach(block =>
     {
         var parsedText = block.Text.Replace(block.Separator, " ");
-        if (block.BoundingBox.Right < foundColumns.typeColumn.Left)
+        if (block.BoundingBox.Right < foundColumns.TypeColumn.Left)
         {
             parsedRow.Date += $" {parsedText}";
             return;
         }
 
-        if (block.BoundingBox.Right < foundColumns.descriptionColumn.Left)
+        if (block.BoundingBox.Right < foundColumns.DescriptionColumn.Left)
         {
             parsedRow.Type += $" {parsedText}";
             return;
         }
 
-        if (block.BoundingBox.Right < foundColumns.incomeColumn.Left)
+        if (block.BoundingBox.Right < foundColumns.IncomeColumn.Left)
         {
             parsedRow.Description += $" {parsedText}";
             return;
         }
 
-        if (block.BoundingBox.Right < foundColumns.expenseColumn.Left)
+        if (block.BoundingBox.Right < foundColumns.ExpenseColumn.Left)
         {
             parsedRow.Income += $" {parsedText}";
             return;
         }
 
-        if (block.BoundingBox.Right < foundColumns.balanceColumn.Left)
+        if (block.BoundingBox.Right < foundColumns.BalanceColumn.Left)
         {
             parsedRow.Expense += $" {parsedText}";
             return;
@@ -165,18 +156,38 @@ blocksPerRow.ForEach(blocks =>
         parsedRow.Balance += $" {parsedText}";
     });
 
+    if (parsedRow.Date == null || !DateOnly.TryParse(parsedRow.Date.Trim(), out var bookingDate))
+    {
+        Console.WriteLine($"Invalid date format: '{parsedRow.Date}'");
+        return;
+    }
+
+    var preparedAmount = (parsedRow.Income ?? parsedRow.Expense)?.Replace("€", "") ?? "";
+    if (!decimal.TryParse(preparedAmount, System.Globalization.NumberStyles.Any,
+            new System.Globalization.CultureInfo("de-DE"), out var amount))
+    {
+        Console.WriteLine($"Invalid amount format: '{parsedRow.Income ?? parsedRow.Expense}'");
+        return;
+    }
+
+    if (parsedRow.Type == null)
+    {
+        Console.WriteLine($"Invalid type: '{parsedRow.Type}'");
+        return;
+    }
+
     transactions.Add(new Transaction(
         Guid.Empty,
-        DateOnly.Parse(parsedRow.Date.Trim()),
-        DateOnly.Parse(parsedRow.Date.Trim()),
-        parsedRow.Type.Trim().ToLower().Contains("erträge") ? TransactionType.Income : TransactionType.Expense,
+        bookingDate,
+        bookingDate,
+        parsedRow.Type.Contains("erträge", StringComparison.CurrentCultureIgnoreCase)
+            ? TransactionType.Income
+            : TransactionType.Expense,
         TransactionProcess.BankTransfer,
         null,
-        parsedRow.Description.Trim(),
+        parsedRow.Description?.Trim() ?? "",
         null,
-        parsedRow.Income != null
-            ? decimal.Parse(parsedRow.Income.Trim().Replace(".", "").Replace(",", ".").Replace("€", ""))
-            : decimal.Parse(parsedRow.Expense.Trim().Replace(".", "").Replace(",", ".").Replace("€", "")),
+        amount,
         Guid.Empty
     ));
 });
@@ -191,12 +202,12 @@ transactions.ForEach(transaction =>
 
 struct TransactionAreaColumns
 {
-    public PdfRectangle dateColumn;
-    public PdfRectangle typeColumn;
-    public PdfRectangle descriptionColumn;
-    public PdfRectangle incomeColumn;
-    public PdfRectangle expenseColumn;
-    public PdfRectangle balanceColumn;
+    public PdfRectangle DateColumn;
+    public PdfRectangle TypeColumn;
+    public PdfRectangle DescriptionColumn;
+    public PdfRectangle IncomeColumn;
+    public PdfRectangle ExpenseColumn;
+    public PdfRectangle BalanceColumn;
 };
 
 struct CashRow
